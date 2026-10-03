@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>College Football Exchange</title>
+<style>
+:root{--bg:#f6f5f1;--cd:#fff;--tx:#1d1d1b;--mu:#6b6b66;--ln:#e3e1da;--ac:#b5341f;--up:#1a7f43;--dn:#c0392b}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--cd:#212120;--tx:#efeee9;--mu:#9a9992;--ln:#34342f;--ac:#e0674f;--up:#4cc27d;--dn:#ef7a6c}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{background:var(--cd);border-bottom:1px solid var(--ln);padding:10px 14px;position:sticky;top:0}
+nav{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+main{max-width:720px;margin:0 auto;padding:14px}
+button{font:inherit;border:0;border-radius:8px;padding:7px 12px;background:var(--ac);color:#fff;cursor:pointer}
+nav button{background:transparent;color:var(--tx);border:1px solid var(--ln);padding:5px 10px;font-size:14px}nav button.on{background:var(--tx);color:var(--bg)}
+button:disabled{opacity:.35;cursor:not-allowed}button.s{background:var(--tx);color:var(--bg)}
+.cd{background:var(--cd);border:1px solid var(--ln);border-radius:12px;padding:14px;margin:12px 0}
+h2{font-size:14px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.05em;color:var(--mu)}
+.row{display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--ln)}.cd .row:first-of-type{border-top:0}
+.n{flex:1;min-width:0}small{display:block;color:var(--mu)}.r{width:26px;text-align:right;color:var(--mu)}
+.up{color:var(--up)}.dn{color:var(--dn)}.pts{font-weight:600;font-variant-numeric:tabular-nums}
+.pill{display:inline-block;padding:2px 10px;border-radius:99px;font-size:13px;color:#fff}.pill.o{background:var(--up)}.pill.l{background:var(--dn)}
+input,textarea{width:100%;font:inherit;padding:9px;margin:4px 0;border:1px solid var(--ln);border-radius:8px;background:var(--bg);color:var(--tx)}textarea{height:200px}
+.err{color:var(--dn)}.note{background:var(--cd);border:1px solid var(--ln);border-radius:8px;padding:8px 12px}
+.bar{position:relative;height:14px;background:var(--ln);border-radius:7px;margin:4px 0 2px}.bar i{position:absolute;top:0;bottom:0;border-radius:7px}
+.scale{display:flex;justify-content:space-between;font-size:12px;color:var(--mu)}
+</style></head><body>
+<header><b>🏈 College Football Exchange</b><nav id="nav"></nav></header>
+<main id="v"><p>Loading…</p></main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script>
+// ====== PASTE YOUR TWO VALUES FROM SUPABASE (Project Settings > API) ======
+const SUPABASE_URL = 'https://homusapmiqsxpstzwzgo.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_bqcKmymM7FelTjJAvEMlqw_EvTaitLn';
+// ==========================================================================
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const S = {tab:'lb', msg:'', ranks:{}, teams:[], week:0};
+const rank = t => S.ranks[String(t).toLowerCase()] || 30;
+const sg = n => (n > 0 ? '+' : '') + n, cl = n => n > 0 ? 'up' : n < 0 ? 'dn' : '';
+
+function locked(){ // display only; the database enforces the real lock
+  const p = new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'short',hour:'numeric',hour12:false}).formatToParts(new Date());
+  const d = p.find(x=>x.type==='weekday').value, h = +p.find(x=>x.type==='hour').value % 24;
+  return (d==='Fri' && h>=18) || d==='Sat' || d==='Sun';
+}
+const bar = () => `<p>Poll week ${S.week||'–'} · <span class="pill ${locked()?'l':'o'}">${locked()?'Trading locked until Sun 11:59pm ET':'Trading open until Fri 6pm ET'}</span></p>`;
+
+function nav(){
+  const t = [['lb','Leaderboard'],['picks','Picks'],['rf','Risers & Fallers'],['hist','History'],['rules','Rules']];
+  if (S.profile?.is_admin) t.push(['admin','Admin']);
+  $('#nav').innerHTML = S.user ? t.map(([k,l])=>`<button data-tab="${k}" class="${S.tab===k?'on':''}">${l}</button>`).join('')+'<button data-a="out">Log out</button>' : '';
+}
+
+async function load(){
+  const {data:{session}} = await sb.auth.getSession();
+  S.user = session?.user || null;
+  if (!S.user) { S.profile = null; return show(); }
+  const [pr, pl] = await Promise.all([
+    sb.from('profiles').select('*').eq('id', S.user.id).single(),
+    sb.from('polls').select('week').order('week',{ascending:false}).limit(1)]);
+  S.profile = pr.data; S.week = pl.data?.[0]?.week || 0; S.ranks = {}; S.teams = [];
+  if (S.week) {
+    const r = await sb.from('poll_ranks').select('team,rank').eq('week', S.week).order('rank');
+    (r.data||[]).forEach(x => { S.teams.push(x.team); S.ranks[x.team.toLowerCase()] = x.rank; });
+  }
+  show();
+}
+
+async function show(){
+  nav();
+  if (!S.user) { $('#v').innerHTML = login(); return; }
+  const f = {lb, picks, rf, hist, rules, admin}[S.tab];
+  try { $('#v').innerHTML = (S.msg ? `<p class="note">${esc(S.msg)}</p>` : '') + await f(); }
+  catch(e){ $('#v').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+  S.msg = '';
+}
+
+function login(){ return `<div class="cd"><h2>Log in or sign up</h2>
+  <input id="nm" placeholder="Display name (sign up only)"><input id="em" type="email" placeholder="Email"><input id="pw" type="password" placeholder="Password (6+ characters)">
+  <p><button data-a="in">Log in</button> <button class="s" data-a="up">Sign up</button></p>${S.msg?`<p class="err">${esc(S.msg)}</p>`:''}</div>`; }
+
+async function lb(){
+  const [a, h] = await Promise.all([sb.rpc('leaderboard'), sb.from('holdings').select('user_id,team,buy_rank').is('sold_at',null)]);
+  if (a.error) throw a.error;
+  const by = {}; (h.data||[]).forEach(x => (by[x.user_id] ||= []).push(x));
+  const me = S.user.id;
+  return bar() + `<div class="cd"><h2>Leaderboard</h2>` + a.data.map((p,i)=>{
+    const open = p.open_pts, tot = p.banked + (open||0), see = by[p.user_id];
+    const picks = see ? see.map(x=>`<small>${esc(x.team)} · bought at #${x.buy_rank} · now ${rank(x.team)===30?'30':'#'+rank(x.team)}</small>`).join('')
+      : (p.held ? '<small>Picks hidden until trading locks</small>' : '<small>No picks</small>');
+    return `<div class="row"><span class="r">${i+1}</span><div class="n">${esc(p.name)}${p.user_id===me?' (you)':''}
+      <small>banked ${sg(p.banked)}${open!=null?' · open '+sg(open):''}</small>${picks}</div>
+      <span class="pts ${cl(tot)}">${open!=null?sg(tot):sg(p.banked)}</span></div>`;
+  }).join('') + '</div>';
+}
+
+async function picks(){
+  const r = await sb.from('holdings').select('*').eq('user_id', S.user.id).is('sold_at',null).order('bought_at');
+  if (r.error) throw r.error;
+  const L = locked(), full = r.data.length >= 5, own = t => r.data.some(x=>x.team.toLowerCase()===t.toLowerCase());
+  return bar() + `<div class="cd"><h2>My picks (${r.data.length}/5)</h2>` + (r.data.map(x=>{
+    const d = x.buy_rank - rank(x.team);
+    return `<div class="row"><div class="n">${esc(x.team)}<small>bought at #${x.buy_rank} · now ${rank(x.team)===30?'unranked (30)':'#'+rank(x.team)}</small></div>
+      <span class="pts ${cl(d)}">${sg(d)}</span><button class="s" data-a="sell" data-id="${x.id}" ${L?'disabled':''}>Sell</button></div>`;
+  }).join('') || '<small>Empty. Buy a team below.</small>') + `</div>
+  <div class="cd"><h2>Buy any team</h2><input id="bt" list="tl" placeholder="Type a team (unranked teams cost 30)">
+  <datalist id="tl">${S.teams.map(t=>`<option value="${esc(t)}">`).join('')}</datalist>
+  <p><button data-a="buy" ${L||full?'disabled':''}>Buy</button></p></div>
+  <div class="cd"><h2>Top 25</h2>` + S.teams.map((t,i)=>`<div class="row"><span class="r">${i+1}</span><div class="n">${esc(t)}</div>
+    <button data-a="buy" data-t="${esc(t)}" ${L||full||own(t)?'disabled':''}>${own(t)?'Held':'Buy'}</button></div>`).join('') + '</div>';
+}
+
+async function rf(){
+  const r = await sb.from('team_ranges').select('*').order('swing',{ascending:false}).limit(15);
+  if (r.error) throw r.error;
+  if (!r.data.length) return '<p class="note">No poll data yet.</p>';
+  return `<div class="cd"><h2>Biggest swings this season</h2><small>Bar spans a team's best to worst rank (1 to 30). Green = ended higher than it started.</small>` +
+    r.data.map(t=>{
+      const left = (t.best_rank-1)/29*100, w = Math.max(t.swing/29*100, 1.5), up = t.latest_rank <= t.first_rank;
+      return `<div style="margin-top:12px"><div class="row" style="border:0;padding:0"><div class="n"><b>${esc(t.team)}</b>
+        <small>best #${t.best_rank} · worst ${t.worst_rank===30?'unranked':'#'+t.worst_rank} · now ${t.latest_rank===30?'unranked':'#'+t.latest_rank}</small></div><span class="pts">${t.swing}</span></div>
+        <div class="bar"><i style="left:${left}%;width:${w}%;background:var(--${up?'up':'dn'})"></i></div></div>`;
+    }).join('') + '<div class="scale"><span>#1</span><span>#30</span></div></div>';
+}
+
+async function hist(){
+  const r = await sb.from('holdings').select('*').eq('user_id', S.user.id).not('sold_at','is',null).order('sold_at',{ascending:false});
+  if (r.error) throw r.error;
+  const tot = r.data.reduce((s,x)=>s+x.buy_rank-x.sell_rank, 0);
+  return `<div class="cd"><h2>My trade history</h2><div class="row"><div class="n">Total banked</div><span class="pts ${cl(tot)}">${sg(tot)}</span></div>` +
+    (r.data.map(x=>{const d=x.buy_rank-x.sell_rank;
+      return `<div class="row"><div class="n">${esc(x.team)}<small>bought #${x.buy_rank} (wk ${x.buy_week}) · sold ${x.sell_rank} (wk ${x.sell_week})</small></div><span class="pts ${cl(d)}">${sg(d)}</span></div>`;
+    }).join('') || '<small>No completed trades yet.</small>') + '</div>';
+}
+
+async function rules(){ return `<div class="cd"><h2>How it works</h2>
+  <p>Buy a team at its current AP poll rank. When you sell, you get <b>buy rank minus sell rank</b> as points. Buy at #17, sell at #8: +9. Buy at #10, sell at #15: −5.</p>
+  <p>Teams outside the Top 25 count as rank 30, so entering the poll pays big and falling out hurts.</p>
+  <p>You have 5 slots. They don't all have to be filled, but if they are, sell one before buying.</p>
+  <p>Trading is open Monday through Friday 6pm ET and locked from Friday 6pm until Sunday 11:59pm ET. Other players' picks are revealed when trading locks.</p>
+  <p>Most banked points at the end of the season wins.</p></div>`; }
+
+async function admin(){ return `<div class="cd"><h2>Load AP poll</h2><input id="wk" type="number" value="${S.week+1}" placeholder="Week number">
+  <p><small>One team per line, #1 first, exactly 25. Numbers and records are stripped. Use the same spelling every week.</small></p>
+  <textarea id="pt">${esc(S.teams.join('\n'))}</textarea><p><button data-a="poll">Publish poll</button></p></div>`; }
+
+document.addEventListener('click', async e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.tab) { S.tab = b.dataset.tab; return show(); }
+  const a = b.dataset.a; if (!a) return;
+  b.disabled = true;
+  try {
+    if (a==='in') { const {error} = await sb.auth.signInWithPassword({email:$('#em').value.trim(), password:$('#pw').value}); if (error) throw error; }
+    else if (a==='up') { const {error} = await sb.auth.signUp({email:$('#em').value.trim(), password:$('#pw').value, options:{data:{name:$('#nm').value.trim()||undefined}}}); if (error) throw error; }
+    else if (a==='out') { await sb.auth.signOut(); }
+    else if (a==='buy') { const {error} = await sb.rpc('buy_team',{p_team:b.dataset.t || $('#bt').value}); if (error) throw error; }
+    else if (a==='sell') { const {error} = await sb.rpc('sell_team',{p_id:+b.dataset.id}); if (error) throw error; }
+    else if (a==='poll') {
+      const teams = $('#pt').value.split('\n').map(l=>l.replace(/^\s*\d+[\.\)\-:\s]*/,'').replace(/\s*\(.*$/,'').trim()).filter(Boolean);
+      const {error} = await sb.rpc('set_poll',{p_week:+$('#wk').value, p_teams:teams}); if (error) throw error;
+      S.msg = 'Poll saved.';
+    }
+  } catch(err) { S.msg = err.message; }
+  await load();
+});
+load();
+</script></body></html>
